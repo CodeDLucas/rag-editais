@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Editais — Consulta Vetorial de Concursos</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="brand-icon" aria-hidden="true">📄</div>
+      <div>
+        <h1>RAG Editais</h1>
+        <p class="subtitle">Bancos de Dados Não Convencionais · Busca Vetorial k-NN + RAG Local</p>
+      </div>
+    </div>
+    <div class="header-status">
+      <span id="health-pill" class="health-pill pill-loading">Verificando Ollama...</span>
+      <button id="btn-refresh-health" type="button" class="btn-icon" title="Verificar status do Ollama" aria-label="Verificar status do Ollama">
+        ↻
+      </button>
+    </div>
+  </header>
+
+  <div id="health-banner" class="health-banner hidden" role="alert">
+    <span class="banner-icon">⚠️</span>
+    <span id="health-banner-text"></span>
+  </div>
+
+  <main class="workspace-grid">
+    <!-- Painel Lateral -->
+    <aside class="sidebar">
+      <section class="card">
+        <h2>1. Carregar Edital (PDF)</h2>
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Selecionar ou arrastar arquivo PDF">
+          <input type="file" id="pdf-input" accept=".pdf,application/pdf" hidden />
+          <div class="dropzone-icon">⬆️</div>
+          <p class="dropzone-title">Arraste o PDF aqui ou clique para selecionar</p>
+          <p id="selected-file-name" class="dropzone-file">Nenhum arquivo selecionado</p>
+        </div>
+
+        <button id="btn-upload" type="button" class="btn-primary" disabled>
+          <span id="upload-spinner" class="spinner hidden" aria-hidden="true"></span>
+          <span id="upload-btn-text">Processar e Indexar Edital</span>
+        </button>
+
+        <p id="upload-status" class="status-feedback" aria-live="polite"></p>
+      </section>
+
+      <section class="card" id="doc-card">
+        <h2>2. Edital Indexado (ChromaDB)</h2>
+        <div id="doc-empty" class="doc-empty">
+          Nenhum edital indexado no momento. Faça o upload de um PDF acima para iniciar.
+        </div>
+        <div id="doc-summary" class="doc-summary hidden">
+          <div class="doc-name" id="doc-filename">—</div>
+          <div class="doc-metrics">
+            <div class="metric">
+              <span class="metric-label">Páginas</span>
+              <span class="metric-value" id="doc-pages">0</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">Chunks</span>
+              <span class="metric-value" id="doc-chunks">0</span>
+            </div>
+          </div>
+          <div class="doc-meta" id="doc-indexed-at"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="param-header">
+          <h2>3. Parâmetros k-NN</h2>
+          <span class="badge-k">Top-K: <strong id="top-k-value">4</strong></span>
+        </div>
+        <input type="range" id="top-k-input" min="1" max="10" value="4" class="range-input" />
+        <p class="param-hint">
+          Define quantos trechos mais similares (cosseno) serão recuperados do ChromaDB e enviados ao LLM.
+        </p>
+      </section>
+    </aside>
+
+    <!-- Área Principal de Chat e Inspeção -->
+    <section class="chat-panel card">
+      <div class="suggestions-bar">
+        <span class="suggestions-label">Perguntas sugeridas:</span>
+        <div class="suggestions-list">
+          <button type="button" class="chip" data-question="Qual o prazo de validade do concurso?">
+            Prazo de validade
+          </button>
+          <button type="button" class="chip" data-question="Quais os cargos, vagas e remunerações?">
+            Cargos, vagas e remunerações
+          </button>
+          <button type="button" class="chip" data-question="Qual a carga horária semanal?">
+            Carga horária semanal
+          </button>
+          <button type="button" class="chip" data-question="Haverá prova discursiva ou avaliação de títulos?">
+            Prova discursiva ou títulos
+          </button>
+        </div>
+      </div>
+
+      <div id="chat-messages" class="chat-messages">
+        <div class="chat-welcome">
+          <h3>Consulte o edital com transparência vetorial</h3>
+          <p>
+            Faça uma pergunta abaixo ou clique em uma das sugestões acima. Para cada resposta, você poderá
+            inspecionar os <strong>Top-K chunks</strong> recuperados via similaridade de cosseno e o
+            <strong>prompt aumentado</strong> enviado ao modelo local.
+          </p>
+        </div>
+      </div>
+
+      <form id="chat-form" class="chat-composer">
+        <textarea
+          id="question-input"
+          rows="2"
+          placeholder="Carregue um edital em PDF ao lado para começar a perguntar..."
+          disabled
+          required
+        ></textarea>
+        <button id="btn-send" type="submit" class="btn-primary btn-send" disabled>
+          <span id="send-spinner" class="spinner hidden" aria-hidden="true"></span>
+          <span>Enviar</span>
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Modal de Inspeção do Prompt Aumentado -->
+  <dialog id="prompt-modal" class="prompt-modal">
+    <div class="modal-header">
+      <h3>Prompt Aumentado Enviado ao LLM</h3>
+      <div class="modal-actions">
+        <button id="btn-copy-prompt" type="button" class="btn-secondary">Copiar</button>
+        <button id="btn-close-modal" type="button" class="btn-icon" aria-label="Fechar">✕</button>
+      </div>
+    </div>
+    <pre id="modal-prompt-content" class="modal-pre"></pre>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
