@@ -142,3 +142,11 @@ def test_upload_validation_and_chat_flow(tmp_path: Path, monkeypatch) -> None:
     assert 0.0 <= first_source["similarity_score"] <= 1.0
     assert "TRECHOS RECUPERADOS DO EDITAL" in chat_data["augmented_prompt"]
     assert "Qual o prazo de validade do concurso?" in chat_data["augmented_prompt"]
+
+
+def test_static_index_served() -> None:
+    client = TestClient(main_module.app)
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "text/html" in res.headers["content-type"]
+    assert "RAG Editais" in res.text
