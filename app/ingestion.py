@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
-import fitz  # PyMuPDF
+import pymupdf
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -85,7 +85,7 @@ def extract_pages_from_pdf(pdf_bytes: bytes, filename: str) -> list[dict[str, An
         raise EmptyPDFError("O arquivo PDF enviado está vazio.")
 
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         raise InvalidPDFError(f"Não foi possível abrir '{filename}' como PDF válido.") from exc
 
