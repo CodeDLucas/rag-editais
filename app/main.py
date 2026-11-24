@@ -1,13 +1,15 @@
-"""Aplicação FastAPI: endpoints de saúde, upload de PDF, consulta RAG e frontend estático."""
+"""Aplicação FastAPI: endpoints de saúde, upload de PDF, consulta RAG (sync + SSE) e frontend."""
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,14 +26,16 @@ from app.rag_service import (
     OllamaTimeoutError,
     RAGServiceError,
     ask_question,
+    stream_question,
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+_EMBED_MODEL_HINTS = ("bge-", "nomic-embed", "mxbai-embed", "all-minilm", "snowflake-arctic-embed")
 
 app = FastAPI(
     title="RAG Editais - Busca Vetorial",
     description="Aplicação acadêmica de RAG para consulta de editais de concursos públicos em PDF.",
-    version="1.0.0",
+    version="0.2.0-beta",
 )
 
 
@@ -43,6 +47,7 @@ class HealthResponse(BaseModel):
     llm_model: str
     llm_model_available: bool
     installed_models: list[str]
+    chat_models: list[str] = Field(default_factory=list)
     message: str
 
 
@@ -69,6 +74,8 @@ class UploadResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=1500)
     top_k: int = Field(default=settings.default_top_k, ge=1, le=10)
+    search_mode: Literal["hybrid", "vector"] = "hybrid"
+    model: str | None = None
 
     @field_validator("question")
     @classmethod
@@ -84,12 +91,22 @@ class SourceChunk(BaseModel):
     page: int
     section: str
     similarity_score: float
+    lexical_score: float | None = None
+    rrf_score: float | None = None
+
+
+class ChatMetrics(BaseModel):
+    retrieval_ms: float
+    generation_ms: float
+    model_used: str
+    search_mode: Literal["hybrid", "vector"]
 
 
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]
     augmented_prompt: str
+    metrics: ChatMetrics
 
 
 def _model_is_available(target: str, installed: list[str]) -> bool:
@@ -101,6 +118,24 @@ def _model_is_available(target: str, installed: list[str]) -> bool:
     if ":" not in target_lower and f"{target_lower}:latest" in normalized_installed:
         return True
     return False
+
+
+def _filter_chat_models(installed: list[str], embedding_model: str) -> list[str]:
+    """Filtra modelos de geração removendo modelos dedicados exclusivamente a embeddings."""
+    emb_base = embedding_model.lower().split(":")[0]
+    result: list[str] = []
+    for model_name in installed:
+        lower = model_name.lower()
+        if lower.split(":")[0] == emb_base:
+            continue
+        if any(hint in lower for hint in _EMBED_MODEL_HINTS):
+            continue
+        result.append(model_name)
+    return result
+
+
+def _format_sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -121,6 +156,7 @@ async def health_check() -> HealthResponse:
             llm_model=settings.llm_model,
             llm_model_available=False,
             installed_models=[],
+            chat_models=[],
             message=(
                 f"Servidor Ollama offline ou inacessível em {settings.ollama_base_url}. "
                 "Inicie o Ollama antes de indexar ou consultar editais."
@@ -128,6 +164,7 @@ async def health_check() -> HealthResponse:
         )
 
     installed = [m.get("name", "") for m in payload.get("models", []) if m.get("name")]
+    chat_models = _filter_chat_models(installed, settings.embedding_model)
     emb_ok = _model_is_available(settings.embedding_model, installed)
     llm_ok = _model_is_available(settings.llm_model, installed)
 
@@ -147,6 +184,7 @@ async def health_check() -> HealthResponse:
             llm_model=settings.llm_model,
             llm_model_available=llm_ok,
             installed_models=installed,
+            chat_models=chat_models,
             message=f"Ollama ativo, mas faltam modelos configurados. Execute: {pulls}",
         )
 
@@ -158,6 +196,7 @@ async def health_check() -> HealthResponse:
         llm_model=settings.llm_model,
         llm_model_available=True,
         installed_models=installed,
+        chat_models=chat_models,
         message="Ollama online e modelos prontos para uso.",
     )
 
@@ -224,12 +263,14 @@ async def upload_edital(file: UploadFile = File(...)) -> UploadResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_edital(payload: ChatRequest) -> ChatResponse:
-    """Executa busca k-NN e gera resposta fundamentada com inspeção vetorial."""
+    """Executa busca vetorial/híbrida e gera resposta fundamentada com telemetria."""
     try:
         result = ask_question(
             question=payload.question,
             top_k=payload.top_k,
             settings=settings,
+            search_mode=payload.search_mode,
+            model=payload.model,
         )
     except NoDocumentIndexedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -241,6 +282,36 @@ async def chat_with_edital(payload: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return ChatResponse(**result)
+
+
+@app.post("/api/chat/stream")
+async def stream_chat_with_edital(payload: ChatRequest) -> StreamingResponse:
+    """Transmite os trechos recuperados e os tokens do LLM via Server-Sent Events (SSE)."""
+
+    async def event_generator() -> AsyncIterator[str]:
+        try:
+            async for item in stream_question(
+                question=payload.question,
+                top_k=payload.top_k,
+                settings=settings,
+                search_mode=payload.search_mode,
+                model=payload.model,
+            ):
+                yield _format_sse(item["event"], item["data"])
+        except (NoDocumentIndexedError, OllamaConnectionError, OllamaTimeoutError, RAGServiceError) as exc:
+            yield _format_sse("error", {"detail": str(exc)})
+        except Exception as exc:
+            yield _format_sse("error", {"detail": f"Erro inesperado no streaming: {exc}"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 if STATIC_DIR.exists():
