@@ -25,10 +25,10 @@ flowchart LR
 
 ### Conceitos de Bancos de Dados Não Convencionais Demonstrados
 
-1. **Chunking com Enriquecimento de Metadados:** O `PyMuPDF` extrai o texto página a página e aplica heurísticas para identificar títulos e seções típicas de editais (`1. DAS DISPOSIÇÕES PRELIMINARES`, `CAPÍTULO`, `ANEXO`), propagando `source`, `page`, `section`, `chunk_index` e `document_id` para cada chunk.
+1. **Chunking com Enriquecimento Contextual:** O `PyMuPDF` extrai o texto página a página, ignora linhas de sumário com pontilhado (`....`) e identifica títulos e seções típicas de editais (`1. DAS DISPOSIÇÕES PRELIMINARES`, `CAPÍTULO`, `ANEXO`), propagando `source`, `page`, `section`, `chunk_index` e `document_id` e prefixando `[Seção | Página]` no texto indexado para enriquecer os embeddings.
 2. **Representação Vetorial Densa (`bge-m3`):** Tanto os chunks do edital quanto a pergunta do usuário são convertidos em vetores densos localmente pelo modelo `bge-m3` via Ollama.
-3. **Banco Vetorial & Índice HNSW por Cosseno (`ChromaDB`):** Os vetores e metadados são persistidos em `./chroma_db` com `collection_metadata={"hnsw:space": "cosine"}`, permitindo busca aproximada **k-NN** (`similarity_search_with_relevance_scores`) ordenada por similaridade de cosseno.
-4. **RAG Grounded & Transparência Acadêmica:** O LLM (`qwen2.5:3b`, configurável via `.env`) é instruído a responder **estritamente** com base nos trechos recuperados, citando página e seção. A interface exibe os **Top-K chunks**, os scores de similaridade e permite inspecionar o **prompt aumentado** completo enviado ao modelo.
+3. **Banco Vetorial & Busca Híbrida (Cosseno + BM25 RRF):** Os vetores e metadados são persistidos no **ChromaDB** (`./chroma_db`) com `collection_metadata={"hnsw:space": "cosine"}`. Na consulta, o sistema suporta **Busca Híbrida** combinando o ranking semântico denso (Cosseno k-NN) com o ranking léxico (**BM25** normalizado em português) via **Reciprocal Rank Fusion (RRF)**, além do modo **Vetorial Pura** para comparação acadêmica.
+4. **RAG Grounded, Streaming SSE & Transparência:** Os tokens do LLM (`qwen2.5:3b` ou outro modelo instalado no Ollama selecionado na interface) são transmitidos em tempo real via **Server-Sent Events** (`POST /api/chat/stream`), exibindo telemetria de latência (`retrieval_ms` / `generation_ms`), scores individuais (`cos` e `bm25`) e modal para inspecionar o **prompt aumentado** completo.
 
 ---
 
@@ -99,16 +99,25 @@ Acesse no navegador: **`http://127.0.0.1:8000`**
 | `GET` | `/api/health` | Verifica se o Ollama está acessível e se `EMBEDDING_MODEL` e `LLM_MODEL` estão disponíveis |
 | `GET` | `/api/document` | Retorna o resumo do edital atualmente indexado no ChromaDB (ou `null`) |
 | `POST` | `/api/upload` | Recebe `.pdf` via `multipart/form-data`, extrai seções, gera chunks e indexa no ChromaDB |
-| `POST` | `/api/chat` | Recebe `{ "question", "top_k" }`, executa busca k-NN e retorna `{ answer, sources, augmented_prompt }` |
+| `POST` | `/api/chat` | Recebe `{ "question", "top_k", "search_mode", "model" }`, executa busca vetorial/híbrida e retorna `{ answer, sources, augmented_prompt, metrics }` |
+| `POST` | `/api/chat/stream` | Versão em tempo real via **Server-Sent Events (SSE)** transmitindo `sources`, `token` e `done` |
 
 ---
 
-## Testes Automatizados
+## Testes Automatizados & E2E (Playwright)
 
-Os testes validam o pipeline de extração/chunking/re-ingestão no ChromaDB e todos os endpoints da API (usando mocks determinísticos para o Ollama):
+Os testes unitários e de integração validam o pipeline de extração/chunking/re-ingestão no ChromaDB e todos os endpoints da API (usando mocks determinísticos para o Ollama):
 
 ```powershell
 .\.venv\Scripts\pytest.exe -v
+```
+
+Para rodar também a verificação ponta a ponta (E2E) com navegador Chromium real contra o servidor Uvicorn + Ollama:
+
+```powershell
+pip install -r requirements-dev.txt
+.\.venv\Scripts\playwright.exe install chromium
+.\.venv\Scripts\python.exe tests\e2e_playwright_verify.py
 ```
 
 ---
