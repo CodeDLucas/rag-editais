@@ -110,3 +110,9 @@ Os testes validam o pipeline de extração/chunking/re-ingestão no ChromaDB e t
 ```powershell
 .\.venv\Scripts\pytest.exe -v
 ```
+
+---
+
+## Licença
+
+Este projeto está licenciado sob a [Licença MIT](LICENSE).
