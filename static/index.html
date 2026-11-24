@@ -11,8 +11,8 @@
     <div class="header-brand">
       <div class="brand-icon" aria-hidden="true">📄</div>
       <div>
-        <h1>RAG Editais</h1>
-        <p class="subtitle">Bancos de Dados Não Convencionais · Busca Vetorial k-NN + RAG Local</p>
+        <h1>RAG Editais <span class="version-badge">v0.2-beta</span></h1>
+        <p class="subtitle">Bancos de Dados Não Convencionais · Busca Híbrida (Cosseno + BM25) &amp; RAG Local</p>
       </div>
     </div>
     <div class="header-status">
@@ -71,20 +71,40 @@
 
       <section class="card">
         <div class="param-header">
-          <h2>3. Parâmetros k-NN</h2>
+          <h2>3. Parâmetros de Busca &amp; LLM</h2>
           <span class="badge-k">Top-K: <strong id="top-k-value">4</strong></span>
         </div>
         <input type="range" id="top-k-input" min="1" max="10" value="4" class="range-input" />
         <p class="param-hint">
-          Define quantos trechos mais similares (cosseno) serão recuperados do ChromaDB e enviados ao LLM.
+          Define quantos trechos serão recuperados do ChromaDB e enviados ao modelo.
         </p>
+
+        <div class="control-group">
+          <label for="search-mode-select" class="control-label">Modo de Busca</label>
+          <select id="search-mode-select" class="control-select">
+            <option value="hybrid" selected>Híbrida (Cosseno + BM25 RRF)</option>
+            <option value="vector">Vetorial Pura (Cosseno k-NN)</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label for="llm-model-select" class="control-label">Modelo LLM (Ollama)</label>
+          <select id="llm-model-select" class="control-select">
+            <option value="">Carregando modelos...</option>
+          </select>
+        </div>
       </section>
     </aside>
 
     <!-- Área Principal de Chat e Inspeção -->
     <section class="chat-panel card">
       <div class="suggestions-bar">
-        <span class="suggestions-label">Perguntas sugeridas:</span>
+        <div class="suggestions-top">
+          <span class="suggestions-label">Perguntas sugeridas:</span>
+          <button id="btn-clear-chat" type="button" class="btn-secondary btn-clear">
+            Limpar conversa
+          </button>
+        </div>
         <div class="suggestions-list">
           <button type="button" class="chip" data-question="Qual o prazo de validade do concurso?">
             Prazo de validade
@@ -105,9 +125,9 @@
         <div class="chat-welcome">
           <h3>Consulte o edital com transparência vetorial</h3>
           <p>
-            Faça uma pergunta abaixo ou clique em uma das sugestões acima. Para cada resposta, você poderá
-            inspecionar os <strong>Top-K chunks</strong> recuperados via similaridade de cosseno e o
-            <strong>prompt aumentado</strong> enviado ao modelo local.
+            Faça uma pergunta abaixo ou clique em uma das sugestões acima. Os trechos recuperados por
+            <strong>Busca Híbrida (Cosseno + BM25)</strong> aparecem em tempo real enquanto o modelo
+            local gera a resposta em streaming.
           </p>
         </div>
       </div>
