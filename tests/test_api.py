@@ -17,6 +17,12 @@ from tests.test_ingestion import DeterministicFakeEmbeddings, _make_blank_pdf, _
 def _make_fake_llm(reply_text: str) -> MagicMock:
     llm = MagicMock()
     llm.invoke.return_value = AIMessage(content=reply_text)
+
+    async def _fake_astream(*args, **kwargs):
+        for word in reply_text.split(" "):
+            yield AIMessage(content=word + " ")
+
+    llm.astream = _fake_astream
     return llm
 
 
@@ -125,23 +131,49 @@ def test_upload_validation_and_chat_flow(tmp_path: Path, monkeypatch) -> None:
     assert doc_res_after.status_code == 200
     assert doc_res_after.json()["document"]["filename"] == "edital_2026.pdf"
 
-    # /api/chat retorna answer, sources e augmented_prompt
+    # /api/chat (modo híbrido) retorna answer, sources, augmented_prompt e metrics
     with patch("app.ingestion.get_embeddings", return_value=fake_emb), patch(
         "app.rag_service.ChatOllama", return_value=fake_llm
     ):
         chat_res = client.post(
             "/api/chat",
-            json={"question": "Qual o prazo de validade do concurso?", "top_k": 2},
+            json={
+                "question": "Qual o prazo de validade do concurso?",
+                "top_k": 2,
+                "search_mode": "hybrid",
+            },
         )
     assert chat_res.status_code == 200
     chat_data = chat_res.json()
     assert "2 anos" in chat_data["answer"]
     assert 1 <= len(chat_data["sources"]) <= 2
     first_source = chat_data["sources"][0]
-    assert {"content", "page", "section", "similarity_score"} <= set(first_source.keys())
+    assert {"content", "page", "section", "similarity_score", "lexical_score", "rrf_score"} <= set(
+        first_source.keys()
+    )
     assert 0.0 <= first_source["similarity_score"] <= 1.0
     assert "TRECHOS RECUPERADOS DO EDITAL" in chat_data["augmented_prompt"]
     assert "Qual o prazo de validade do concurso?" in chat_data["augmented_prompt"]
+    assert chat_data["metrics"]["search_mode"] == "hybrid"
+    assert chat_data["metrics"]["retrieval_ms"] >= 0
+
+    # /api/chat/stream (SSE) transmite sources -> token -> done
+    with patch("app.ingestion.get_embeddings", return_value=fake_emb), patch(
+        "app.rag_service.ChatOllama", return_value=fake_llm
+    ):
+        stream_res = client.post(
+            "/api/chat/stream",
+            json={
+                "question": "Qual o prazo de validade do concurso?",
+                "top_k": 2,
+                "search_mode": "vector",
+            },
+        )
+    assert stream_res.status_code == 200
+    assert "text/event-stream" in stream_res.headers["content-type"]
+    assert "event: sources" in stream_res.text
+    assert "event: token" in stream_res.text
+    assert "event: done" in stream_res.text
 
 
 def test_static_index_served() -> None:
