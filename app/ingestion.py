@@ -1,4 +1,4 @@
-"""Pipeline de ingestão de editais em PDF: extração, detecção de seções, chunking e indexação no ChromaDB."""
+"""Pipeline de ingestão de editais em PDF: extração, detecção de seções, chunking contextual e ChromaDB."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any
 
 import chromadb
 import pymupdf
+from chromadb.config import Settings as ChromaSettings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -30,6 +31,7 @@ _STRUCTURAL_HEADING_RE = re.compile(
     r"^\s*(?:CAP[ÍI]TULO|SE[ÇC][ÃA]O|T[ÍI]TULO|ANEXO|EDITAL)\s+[IVXLCDM0-9]+.*$",
     re.IGNORECASE,
 )
+_TOC_DOT_LEADER_RE = re.compile(r"\.{3,}|…{2,}")
 
 
 class IngestionError(Exception):
@@ -48,6 +50,10 @@ def detect_section_heading(line: str) -> str | None:
     """Identifica se uma linha representa um título de seção/capítulo de edital."""
     cleaned = re.sub(r"\s+", " ", line).strip()
     if len(cleaned) < 4 or len(cleaned) > 100:
+        return None
+
+    # Ignora linhas de sumário com pontilhado (ex.: "1. DAS DISPOSIÇÕES ........ 3")
+    if _TOC_DOT_LEADER_RE.search(cleaned):
         return None
 
     # Evita capturar linhas puramente numéricas, datas ou pontuações
@@ -131,7 +137,7 @@ def extract_pages_from_pdf(pdf_bytes: bytes, filename: str) -> list[dict[str, An
         doc.close()
 
 
-def _resolve_chunk_section(chunk_text: str, page_info: dict[str, Any], active_section: str) -> str:
+def _resolve_chunk_section(chunk_text: str, active_section: str) -> str:
     """Associa ao chunk o título de seção mais recente encontrado nele ou herdado."""
     resolved = active_section
     for line in chunk_text.splitlines():
@@ -148,7 +154,7 @@ def chunk_pages(
     chunk_size: int,
     chunk_overlap: int,
 ) -> list[Document]:
-    """Divide o texto das páginas em chunks preservando página, seção e fonte."""
+    """Divide o texto das páginas em chunks com enriquecimento contextual de seção/página."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -174,18 +180,21 @@ def chunk_pages(
             if not cleaned_chunk:
                 continue
 
-            chunk_section = _resolve_chunk_section(cleaned_chunk, page_info, running_section)
+            chunk_section = _resolve_chunk_section(cleaned_chunk, running_section)
             running_section = chunk_section
+
+            contextual_content = f"[Seção: {chunk_section} | Página: {page_num}]\n{cleaned_chunk}"
 
             documents.append(
                 Document(
-                    page_content=cleaned_chunk,
+                    page_content=contextual_content,
                     metadata={
                         "source": filename,
                         "page": page_num,
                         "section": chunk_section,
                         "chunk_index": global_idx,
                         "document_id": document_id,
+                        "raw_content": cleaned_chunk,
                     },
                 )
             )
@@ -203,9 +212,12 @@ def get_embeddings(settings: Settings) -> OllamaEmbeddings:
 
 
 def get_chroma_client(persist_dir: str) -> chromadb.PersistentClient:
-    """Cria cliente persistente do ChromaDB garantindo existência do diretório."""
+    """Cria cliente persistente do ChromaDB com telemetria desativada."""
     Path(persist_dir).mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=persist_dir)
+    return chromadb.PersistentClient(
+        path=persist_dir,
+        settings=ChromaSettings(anonymized_telemetry=False),
+    )
 
 
 def get_vectorstore(
@@ -224,12 +236,29 @@ def get_vectorstore(
     )
 
 
+def get_all_collection_documents(
+    client: chromadb.ClientAPI,
+    collection_name: str,
+) -> list[Document]:
+    """Recupera todos os documentos e metadados da coleção para busca lexical BM25."""
+    collection = client.get_collection(name=collection_name)
+    payload = collection.get(include=["documents", "metadatas"])
+    raw_docs = payload.get("documents") or []
+    raw_metas = payload.get("metadatas") or []
+
+    docs: list[Document] = []
+    for text, meta in zip(raw_docs, raw_metas):
+        if text is None:
+            continue
+        docs.append(Document(page_content=text, metadata=meta or {}))
+    return docs
+
+
 def _reset_collection(client: chromadb.ClientAPI, collection_name: str) -> None:
     """Remove a coleção anterior via API do ChromaDB sem apagar arquivos em uso."""
     try:
         client.delete_collection(name=collection_name)
     except Exception:
-        # Coleção ainda não existe — comportamento esperado na primeira ingestão
         pass
 
 
