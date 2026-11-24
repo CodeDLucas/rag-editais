@@ -83,6 +83,7 @@ def test_detect_section_heading() -> None:
     assert detect_section_heading("1. DAS DISPOSIÇÕES PRELIMINARES") == "1. DAS DISPOSIÇÕES PRELIMINARES"
     assert detect_section_heading("ANEXO I - CONTEÚDO PROGRAMÁTICO") == "ANEXO I - CONTEÚDO PROGRAMÁTICO"
     assert detect_section_heading("CAPÍTULO II - DAS PROVAS") == "CAPÍTULO II - DAS PROVAS"
+    assert detect_section_heading("1. DAS DISPOSIÇÕES PRELIMINARES ............ 3") is None
     assert detect_section_heading("O prazo de validade será de dois anos.") is None
     assert detect_section_heading("12345") is None
 
